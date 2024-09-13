@@ -18,9 +18,9 @@ chain_ids = {
 
 
 # data
-# @st.cache_data(ttl=600)
+@st.cache_data(ttl=3600)
 def fetch_data():
-    client = MongoClient(MONGO_URL, server_api=ServerApi("1"))
+    client = MongoClient(MONGO_URL)
     try:
         client.admin.command("ping")
         print("Pinged your deployment. You successfully connected to MongoDB!")
@@ -31,41 +31,51 @@ def fetch_data():
     pipeline = [
         {
             "$facet": {
-                "totalCount": [{"$count": "count"}],
-                "chainIdCounts": [
-                    {"$group": {"_id": "$chainId", "count": {"$sum": 1}}},
+                # Total document count
+                "document_count": [{"$count": "count"}],
+                # Total unique users without exceeding 16MB limit
+                "total_users": [{"$group": {"_id": "$sender"}}, {"$count": "count"}],
+                # Counts per chainId
+                "chain_id_counts": [
+                    {"$group": {"_id": "$chainId", "count": {"$sum": 1}}}
                 ],
             }
         }
     ]
 
-    result = list(collection.aggregate(pipeline))[0]
-    document_count = result["totalCount"][0]["count"] if result["totalCount"] else 0
+    # Execute the pipeline
+    result = list(collection.aggregate(pipeline, allowDiskUse=True))[0]
+
+    # Extract results with safe fallback
+    document_count = (
+        result["document_count"][0]["count"] if result["document_count"] else 0
+    )
+    total_users = result["total_users"][0]["count"] if result["total_users"] else 0
+
+    # Map chainIds if necessary
     chain_id_counts = {
-        chain_ids[item["_id"]]: item["count"] for item in result["chainIdCounts"]
+        chain_ids.get(item["_id"], item["_id"]): item["count"]
+        for item in result["chain_id_counts"]
     }
+
+    print(f"Total Users: {total_users}")
 
     data = {
         "document_count": document_count,
         "chain_id_counts": chain_id_counts,
+        "total_users": total_users,
     }
+
+    client.close()
 
     return data
 
 
+@st.cache_data(ttl=3600)
 def main():
     st.markdown("## [Magicscan](https://magicscan.xyz)")
 
     data = fetch_data()
-
-    st.markdown(
-        f"<h2 style='text-align: center;'>Total User Operation Events</h2>",
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        f"<h2 style='text-align: center; color: #CF8CEF;'>{data['document_count']:,.0f}</h2>",
-        unsafe_allow_html=True,
-    )
 
     col1, col2 = st.columns(2)
 
@@ -73,6 +83,14 @@ def main():
     mid_index = len(chain_id_counts) // 2
 
     with col1:
+        st.markdown(
+            f"<h2 style='text-align: center;'>Total User Operation Events</h2>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"<h2 style='text-align: center; color: #CF8CEF;'>{data['document_count']:,.0f}</h2>",
+            unsafe_allow_html=True,
+        )
         for chain_id, count in chain_id_counts[:mid_index]:
             st.markdown(
                 f"<h3>{chain_id}</h3>",
@@ -84,6 +102,14 @@ def main():
             )
 
     with col2:
+        st.markdown(
+            f"<h2 style='text-align: center;'>Total Users</h2>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"<h2 style='text-align: center; color: #CF8CEF;'>{data['total_users']:,.0f}</h2>",
+            unsafe_allow_html=True,
+        )
         for chain_id, count in chain_id_counts[mid_index:]:
             st.markdown(
                 f"<h3>{chain_id}</h3>",
